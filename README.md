@@ -47,11 +47,11 @@ The tester includes the following tests:
 - Detect memory leaks and errors using Valgrind.
 
 ### Tester Usage
-from parent directory:
 1. **Prepare the Testee Directory**
-- Place the student's assignment files inside the testee directory.
-2. **Execute the Tester**
-``` cargo run -p assignment3-tester```\
+- Place the student's assignment files inside the testee directory located in the working space root (parent directory).
+2. **Execute the Tester** 
+- Execute the following command ***from the working space root (parent directory)*** \
+``` cargo run -p assignment3-tester``` \
 This command will execute all the integration tests against the provided assignment files.
 3. **Review Log Files**
 - After execution, log files will be generated inside the testee directory.
