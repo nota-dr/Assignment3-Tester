@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
+use nix::unistd::mkfifo;
+use nix::sys::stat::Mode;
 
 use async_trait::async_trait;
 use tests_lib::{check_valgrind_leaks, ProcessOutput, TestAgent};
@@ -148,15 +150,20 @@ pub fn create_dir_structure() {
         .join("resources")
         .join("threadpool.h");
 
-    let symlink_path = cwd
+    let fifo_file = cwd
         .join("testee")
         .join("dir1")
         .join("dir2")
-        .join("dummy_symlink");
+        .join("fifo_file");
 
-    if !symlink_path.is_symlink() {
-        std::os::unix::fs::symlink("dummy", symlink_path).unwrap();
+    if !fifo_file.exists() {
+        let permissions = Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IRGRP | Mode::S_IWGRP | Mode::S_IROTH | Mode::S_IWOTH;
+        mkfifo(&fifo_file, permissions).expect("[-] Could not create fifo file");
     }
+
+    // if !symlink_path.is_symlink() {
+    //     std::os::unix::fs::symlink(&threadpool_h, symlink_path).unwrap();
+    // }
 
     std::fs::copy(threadpool_h, cwd.join("testee").join("threadpool.h"))
         .expect("[-] Could not copy threadpool.h");
@@ -389,7 +396,7 @@ impl TestAgent for Forbidden {
 
         let buffer2 = send_local_request(
             port,
-            b"GET /dir1/dir2/dummy_symlink HTTP/1.0\r\n",
+            b"GET /dir1/dir2/fifo_file HTTP/1.0\r\n",
             read_timeout,
         )
         .await?;
