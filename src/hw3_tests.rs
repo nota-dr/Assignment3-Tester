@@ -256,6 +256,7 @@ impl TestAgent for ValidateInput {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer1 =
             send_local_request(port, b"GET HTTP/1.0\r\n", read_timeout).await?;
@@ -285,6 +286,7 @@ impl TestAgent for OnlyGETMethod {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer =
             send_local_request(port, b"POST / HTTP/1.0\r\n", read_timeout)
@@ -310,6 +312,7 @@ impl TestAgent for PathDoesNotExist {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer = send_local_request(
             port,
@@ -338,6 +341,7 @@ impl TestAgent for TemporaryRedirect {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer = send_local_request(
             port,
@@ -386,6 +390,7 @@ impl TestAgent for Forbidden {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer1 = send_local_request(
             port,
@@ -422,6 +427,7 @@ impl TestAgent for SearchForIndexHtml {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer = send_local_request(
             port,
@@ -494,6 +500,7 @@ impl TestAgent for ReturnDirContent {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer = send_local_request(
             port,
@@ -570,6 +577,7 @@ impl TestAgent for FileSizeExceedsOSBuffer {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer = send_local_request(
             port,
@@ -628,6 +636,7 @@ impl TestAgent for Deadlock {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let mut tasks = Vec::new();
         for _ in 0..10 {
@@ -707,6 +716,7 @@ impl TestAgent for Valgrind {
         &self,
         read_timeout: u64,
         port: &str,
+        _: Option<i32>
     ) -> Result<Vec<Vec<u8>>, std::io::Error> {
         let buffer1 =
             send_local_request(port, b"GET HTTP/1.0\r\n", read_timeout).await?;
