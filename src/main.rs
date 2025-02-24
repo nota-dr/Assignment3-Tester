@@ -7,7 +7,7 @@ fn main() {
     assignment3_tester::add_tests(&mut tm, 5000);
 
     let compilation =
-        tm.compile_assignment("gcc -Wall *.c *.h -o server -lpthread");
+        tm.compile_assignment("gcc -Wall -Wextra *.c *.h -o server -lpthread");
     if compilation != "error" {
         println!("----- Tests Results -----");
         for (name, ok) in tm.run_tests() {
