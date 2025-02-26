@@ -537,8 +537,16 @@ impl TestAgent for ReturnDirContent {
             let last_modified: DateTime<Utc> =
                 file_metadata.modified().unwrap().into();
 
-            let col_name =
+            let col_name_v1 =
                 format!("<td><a href=\"{}\">{}</a></td>", file_name, file_name)
+                    .to_lowercase();
+            
+            let col_name_v2 =
+                format!("<td><a href=\"{}/\">{}/</a></td>", file_name, file_name)
+                    .to_lowercase();
+
+            let col_name_v3 =
+                format!("<td><a href=\"/{}\">/{}</a></td>", file_name, file_name)
                     .to_lowercase();
 
             let col_time = format!(
@@ -554,7 +562,9 @@ impl TestAgent for ReturnDirContent {
             }
             .to_lowercase();
 
-            if !communicate_output.contains(&col_name) {
+            if !communicate_output.contains(&col_name_v1) &&
+               !communicate_output.contains(&col_name_v2) &&
+               !communicate_output.contains(&col_name_v3) {
                 return false;
             }
 
