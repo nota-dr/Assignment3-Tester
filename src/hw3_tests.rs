@@ -1,15 +1,17 @@
 use chrono::{DateTime, Utc};
+use nix::sys::stat::Mode;
+use nix::unistd::mkfifo;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
-use nix::unistd::mkfifo;
-use nix::sys::stat::Mode;
 
 use async_trait::async_trait;
-use tests_lib::{check_valgrind_leaks, ProcessOutput, TestAgent};
+use tests_lib::{
+    check_valgrind_leaks, CommunicateOutput, ProcessOutput, TestAgent,
+};
 
 pub struct Usage;
 pub struct ValidateInput;
@@ -157,8 +159,14 @@ pub fn create_dir_structure() {
         .join("fifo_file");
 
     if !fifo_file.exists() {
-        let permissions = Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IRGRP | Mode::S_IWGRP | Mode::S_IROTH | Mode::S_IWOTH;
-        mkfifo(&fifo_file, permissions).expect("[-] Could not create fifo file");
+        let permissions = Mode::S_IRUSR
+            | Mode::S_IWUSR
+            | Mode::S_IRGRP
+            | Mode::S_IWGRP
+            | Mode::S_IROTH
+            | Mode::S_IWOTH;
+        mkfifo(&fifo_file, permissions)
+            .expect("[-] Could not create fifo file");
     }
 
     // if !symlink_path.is_symlink() {
@@ -187,52 +195,50 @@ async fn send_local_request(
     Ok(buffer)
 }
 
-fn verify_responses_status(output: &Vec<Vec<u8>>, expected: &str) -> bool {
+fn verify_response_status(response: &Vec<u8>, expected: &str) -> bool {
     let status = String::from("http/1.0 ") + expected;
     let content_length = "content-length: ";
-    for raw_res in output {
-        let res = String::from_utf8_lossy(raw_res).to_lowercase();
+    let response = String::from_utf8_lossy(response).to_lowercase();
+    if !response.contains(&status) {
+        return false;
+    }
 
-        if !res.contains(&status) {
-            return false;
-        }
-
-        // verify that the content-length was not copied-pasta
+    // verify that the content-length was not copied-pasta
         let content_length_pos =
-            res.find(content_length).map(|i| i + content_length.len());
+            response.find(content_length).map(|i| i + content_length.len());
 
         let content_length_pos = match content_length_pos {
             Some(i) => i,
             None => return false,
         };
 
-        let content_length_value = res[content_length_pos..]
+        let content_length_value = response[content_length_pos..]
             .chars()
             .take_while(|c| c.is_ascii_digit())
             .collect::<String>()
             .parse::<usize>()
             .expect("[-] Could not parse content-length");
 
-        let res_parts = res.split("\r\n\r\n").collect::<Vec<&str>>();
-        if res_parts.len() < 2 {
+        let response_parts = response.split("\r\n\r\n").collect::<Vec<&str>>();
+        if response_parts.len() < 2 {
             return false;
         }
-        
-        let raw_body = res_parts[1];
+
+        let raw_body = response_parts[1];
 
         if raw_body.len() != content_length_value {
             return false;
         }
-    }
 
     true
 }
 
+#[async_trait]
 impl TestAgent for Usage {
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        _: Option<Vec<Vec<u8>>>,
+        _: Option<CommunicateOutput>,
         result: ProcessOutput,
         _: &PathBuf,
     ) -> bool {
@@ -256,27 +262,47 @@ impl TestAgent for ValidateInput {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer1 =
-            send_local_request(port, b"GET HTTP/1.0\r\n", read_timeout).await?;
-        let buffer2 =
-            send_local_request(port, b"/ HTTP/1.0\r\n", read_timeout).await?;
-        let buffer3 =
-            send_local_request(port, b"GET / HTT/1.0\r\n", read_timeout)
-                .await?;
-        Ok(vec![buffer1, buffer2, buffer3])
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let mut responses = Vec::new();
+        let requests: &[&[u8]] =
+            &[b"GET HTTP/1.0\r\n", b"/ HTTP/1.0\r\n", b"GET / HTT/1.0\r\n"];
+
+        for req in requests {
+            match send_local_request(port, req, read_timeout).await {
+                Ok(response) => {
+                    responses.push(response);
+                }
+                Err(e) => {
+                    return CommunicateOutput {
+                        output: responses,
+                        error: Some(e),
+                    };
+                }
+            }
+        }
+
+        CommunicateOutput { output: responses, error: None }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         _: &PathBuf,
     ) -> bool {
-        let communicate_output = communicate_output.unwrap();
-        verify_responses_status(&communicate_output, "400 bad request")
+        let responses = responses.unwrap();
+        if responses.output.len() != 3 {
+            return false;
+        }
+        for response in responses.output {
+            if !verify_response_status(&response, "400 bad request") {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -286,23 +312,38 @@ impl TestAgent for OnlyGETMethod {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer =
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let response =
             send_local_request(port, b"POST / HTTP/1.0\r\n", read_timeout)
-                .await?;
-        Ok(vec![buffer])
+                .await;
+
+        if let Err(e) = response {
+            return CommunicateOutput {
+                output: Vec::new(),
+                error: Some(e),
+            };
+        }
+
+        CommunicateOutput {
+            output: vec![response.unwrap()],
+            error: None,
+        }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         _: &PathBuf,
     ) -> bool {
-        let communicate_output = communicate_output.unwrap();
-        verify_responses_status(&communicate_output, "501 not supported")
+        let responses = responses.unwrap();
+        if responses.output.len() != 1 {
+            return false;
+        }
+
+        verify_response_status(&responses.output[0], "501 not supported")
     }
 }
 
@@ -312,26 +353,40 @@ impl TestAgent for PathDoesNotExist {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer = send_local_request(
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let response = send_local_request(
             port,
             b"GET /nonexistent HTTP/1.0\r\n",
             read_timeout,
         )
-        .await?;
-        Ok(vec![buffer])
+        .await;
+
+        if let Err(e) = response {
+            return CommunicateOutput {
+                output: Vec::new(),
+                error: Some(e),
+            };
+        }
+
+        CommunicateOutput {
+            output: vec![response.unwrap()],
+            error: None,
+        }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         _: &PathBuf,
     ) -> bool {
-        let communicate_output = communicate_output.unwrap();
-        verify_responses_status(&communicate_output, "404 not found")
+        let responses = responses.unwrap();
+        if responses.output.len() != 1 {
+            return false;
+        }
+        verify_response_status(&responses.output[0], "404 not found")
     }
 }
 
@@ -341,37 +396,52 @@ impl TestAgent for TemporaryRedirect {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer = send_local_request(
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let response = send_local_request(
             port,
             b"GET /dir1/dir2 HTTP/1.0\r\n",
             read_timeout,
         )
-        .await?;
-        Ok(vec![buffer])
+        .await;
+
+        if let Err(e) = response {
+            return CommunicateOutput {
+                output: Vec::new(),
+                error: Some(e),
+            };
+        }
+
+        CommunicateOutput {
+            output: vec![response.unwrap()],
+            error: None,
+        }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         _: &PathBuf,
     ) -> bool {
-        let communicate_output = communicate_output.unwrap();
-        if !verify_responses_status(&communicate_output, "302 found") {
+        let responses = responses.unwrap();
+        if responses.output.len() != 1 {
             return false;
         }
 
-        let communicate_output = communicate_output[0].to_ascii_lowercase();
+        if !verify_response_status(&responses.output[0], "302 found") {
+            return false;
+        }
+
+        let responses = responses.output[0].to_ascii_lowercase();
         let location_header = b"location: /dir1/dir2/\r\n";
         let last_modified = b"last-modified: ";
-        let found_location = communicate_output
+        let found_location = responses
             .windows(location_header.len())
             .filter(|w| w == location_header)
             .count();
-        let found_last_modified = communicate_output
+        let found_last_modified = responses
             .windows(last_modified.len())
             .filter(|w| w == last_modified)
             .count();
@@ -390,34 +460,48 @@ impl TestAgent for Forbidden {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer1 = send_local_request(
-            port,
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let requests: &[&[u8]] = &[
             b"GET /dir1/dir2/dir4/no_permission HTTP/1.0\r\n",
-            read_timeout,
-        )
-        .await?;
-
-        let buffer2 = send_local_request(
-            port,
             b"GET /dir1/dir2/fifo_file HTTP/1.0\r\n",
-            read_timeout,
-        )
-        .await?;
+        ];
 
-        Ok(vec![buffer1, buffer2])
+        let mut responses = Vec::new();
+
+        for req in requests {
+            let response = send_local_request(port, req, read_timeout).await;
+            if let Err(e) = response {
+                return CommunicateOutput {
+                    output: responses,
+                    error: Some(e),
+                };
+            }
+
+            responses.push(response.unwrap());
+        }
+
+        CommunicateOutput { output: responses, error: None }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         _: &PathBuf,
     ) -> bool {
-        let communicate_output = communicate_output.unwrap();
-        verify_responses_status(&communicate_output, "403 forbidden")
+        let responses = responses.unwrap();
+        if responses.output.len() != 2 {
+            return false;
+        }
+        for response in responses.output {
+            if !verify_response_status(&response, "403 forbidden") {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -427,24 +511,40 @@ impl TestAgent for SearchForIndexHtml {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer = send_local_request(
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let response = send_local_request(
             port,
             b"GET /dir1/dir2/ HTTP/1.0\r\n",
             read_timeout,
         )
-        .await?;
-        Ok(vec![buffer])
+        .await;
+
+        if let Err(e) = response {
+            return CommunicateOutput {
+                output: Vec::new(),
+                error: Some(e),
+            };
+        }
+
+        CommunicateOutput {
+            output: vec![response.unwrap()],
+            error: None,
+        }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         cwd: &PathBuf,
     ) -> bool {
+        let responses = responses.unwrap();
+        if responses.output.len() != 1 {
+            return false;
+        }
+
         let index_path = cwd.join("").join("dir1/dir2/index.html");
 
         let mut expected_headers = vec![
@@ -473,12 +573,11 @@ impl TestAgent for SearchForIndexHtml {
         expected_headers.push(&content_length);
         expected_headers.push(&last_modified);
 
-        let communicate_output =
-            String::from_utf8_lossy(&communicate_output.unwrap()[0])
-                .to_lowercase();
+        let responses = String::from_utf8_lossy(&responses.output[0])
+            .to_lowercase();
 
         for header in expected_headers {
-            if !communicate_output.contains(&header) {
+            if !responses.contains(&header) {
                 return false;
             }
         }
@@ -486,7 +585,7 @@ impl TestAgent for SearchForIndexHtml {
         let index_html = std::fs::read_to_string(index_path)
             .expect("[-] Could not read index.html");
 
-        if !communicate_output.contains(index_html.to_lowercase().as_str()) {
+        if !responses.contains(index_html.to_lowercase().as_str()) {
             return false;
         }
 
@@ -500,32 +599,47 @@ impl TestAgent for ReturnDirContent {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer = send_local_request(
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let response = send_local_request(
             port,
             b"GET /dir1/dir2/dir3/ HTTP/1.0\r\n",
             read_timeout,
         )
-        .await?;
-        Ok(vec![buffer])
+        .await;
+
+        if let Err(e) = response {
+            return CommunicateOutput {
+                output: Vec::new(),
+                error: Some(e),
+            };
+        }
+
+        CommunicateOutput {
+            output: vec![response.unwrap()],
+            error: None,
+        }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         cwd: &PathBuf,
     ) -> bool {
+        let responses = responses.unwrap();
+        if responses.output.len() != 1 {
+            return false;
+        }
+
         let dir_path = cwd.join("dir1/dir2/dir3");
-        let communicate_output =
-            String::from_utf8_lossy(&communicate_output.unwrap()[0])
-                .to_lowercase();
+        let responses = String::from_utf8_lossy(&responses.output[0])
+            .to_lowercase();
         let entries =
             std::fs::read_dir(dir_path).expect("[-] Could not read directory");
 
-        if !communicate_output.contains("http/1.0 200 ok") {
+        if !responses.contains("http/1.0 200 ok") {
             return false;
         }
 
@@ -540,14 +654,18 @@ impl TestAgent for ReturnDirContent {
             let col_name_v1 =
                 format!("<td><a href=\"{}\">{}</a></td>", file_name, file_name)
                     .to_lowercase();
-            
-            let col_name_v2 =
-                format!("<td><a href=\"{}/\">{}/</a></td>", file_name, file_name)
-                    .to_lowercase();
 
-            let col_name_v3 =
-                format!("<td><a href=\"/{}\">/{}</a></td>", file_name, file_name)
-                    .to_lowercase();
+            let col_name_v2 = format!(
+                "<td><a href=\"{}/\">{}/</a></td>",
+                file_name, file_name
+            )
+            .to_lowercase();
+
+            let col_name_v3 = format!(
+                "<td><a href=\"/{}\">/{}</a></td>",
+                file_name, file_name
+            )
+            .to_lowercase();
 
             let col_time = format!(
                 "<td>{}</td>",
@@ -562,17 +680,18 @@ impl TestAgent for ReturnDirContent {
             }
             .to_lowercase();
 
-            if !communicate_output.contains(&col_name_v1) &&
-               !communicate_output.contains(&col_name_v2) &&
-               !communicate_output.contains(&col_name_v3) {
+            if !responses.contains(&col_name_v1)
+                && !responses.contains(&col_name_v2)
+                && !responses.contains(&col_name_v3)
+            {
                 return false;
             }
 
-            if !communicate_output.contains(&col_time) {
+            if !responses.contains(&col_time) {
                 return false;
             }
 
-            if !communicate_output.contains(&col_size) {
+            if !responses.contains(&col_size) {
                 return false;
             }
         }
@@ -587,29 +706,43 @@ impl TestAgent for FileSizeExceedsOSBuffer {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer = send_local_request(
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let response = send_local_request(
             port,
             b"GET /dir1/dir2/dir3/mov_example.mov HTTP/1.0\r\n",
             read_timeout,
         )
-        .await?;
-        Ok(vec![buffer])
+        .await;
+
+        if let Err(e) = response {
+            return CommunicateOutput {
+                output: Vec::new(),
+                error: Some(e),
+            };
+        }
+
+        CommunicateOutput {
+            output: vec![response.unwrap()],
+            error: None,
+        }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         cwd: &PathBuf,
     ) -> bool {
-        let communicate_output = &communicate_output.unwrap()[0];
-        let communicate_output_utf8 =
-            String::from_utf8_lossy(&communicate_output).to_lowercase();
-        let raw_headers =
-            communicate_output_utf8.split("\r\n\r\n").next().unwrap();
+        let responses = responses.unwrap();
+        if responses.output.len() != 1 {
+            return false;
+        }
+
+        let responses = &responses.output[0];
+        let responses_utf8 = String::from_utf8_lossy(&responses).to_lowercase();
+        let raw_headers = responses_utf8.split("\r\n\r\n").next().unwrap();
 
         if !raw_headers.contains("http/1.0 200 ok") {
             return false;
@@ -632,7 +765,7 @@ impl TestAgent for FileSizeExceedsOSBuffer {
         file.read_to_end(&mut buffer)
             .expect("[-] Could not read mov_example.mov");
 
-        communicate_output
+        responses
             .windows(buffer.len())
             .filter(|&w| w == &buffer)
             .count()
@@ -646,8 +779,8 @@ impl TestAgent for Deadlock {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
+        _: Option<i32>,
+    ) -> CommunicateOutput {
         let mut tasks = Vec::new();
         for _ in 0..10 {
             let owned_port = port.to_owned();
@@ -666,47 +799,86 @@ impl TestAgent for Deadlock {
 
         let results = futures::future::join_all(tasks).await;
         for res in results {
-            let res = res??;
-            responses.push(res);
+            let res = res.expect("[-] Could not finish task");
+            if let Err(e) = res {
+                return CommunicateOutput {
+                    output: responses,
+                    error: Some(e),
+                };
+            }
+
+            responses.push(res.unwrap());
         }
 
         let mut streams: Vec<tokio::net::TcpStream> = Vec::new();
         for _ in 0..5 {
-            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
-                .await
-                .expect("[-] Could not connect to server");
+            let stream =
+                TcpStream::connect(format!("127.0.0.1:{}", port)).await;
 
-            stream
+            if let Err(e) = stream {
+                return CommunicateOutput {
+                    output: responses,
+                    error: Some(e),
+                };
+            }
+
+            let mut stream = stream.unwrap();
+
+            if let Err(e) = stream
                 .write_all(b"GET /dir1/dir2/dir3/jpg_example.jpg HTTP/1.0\r\n")
                 .await
-                .expect("[-] Could not write to stream");
+            {
+                return CommunicateOutput {
+                    output: responses,
+                    error: Some(e),
+                };
+            }
 
             streams.push(stream);
         }
 
         for mut stream in streams {
             let mut buffer = Vec::new();
-            timeout(
+            let response = timeout(
                 Duration::from_secs(read_timeout),
                 stream.read_to_end(&mut buffer),
             )
-            .await??;
-            responses.push(buffer);
+            .await;
+
+            match response {
+                Ok(Ok(_)) => responses.push(buffer),
+                Ok(Err(e)) => {
+                    return CommunicateOutput {
+                        output: responses,
+                        error: Some(e),
+                    }
+                }
+                Err(etime) => {
+                    return CommunicateOutput {
+                        output: responses,
+                        error: Some(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            etime,
+                        )),
+                    }
+                }
+            }
         }
 
-        Ok(responses)
+        CommunicateOutput { output: responses, error: None }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         _: &PathBuf,
     ) -> bool {
-        let communicate_output = communicate_output.unwrap();
+        let responses = responses.unwrap();
         let expected = "http/1.0 200 ok";
-        let found = communicate_output
+        let found = responses
+            .output
             .iter()
             .filter(|&output| {
                 String::from_utf8_lossy(output)
@@ -726,105 +898,81 @@ impl TestAgent for Valgrind {
         &self,
         read_timeout: u64,
         port: &str,
-        _: Option<i32>
-    ) -> Result<Vec<Vec<u8>>, std::io::Error> {
-        let buffer1 =
-            send_local_request(port, b"GET HTTP/1.0\r\n", read_timeout).await?;
-
-        let buffer2 =
-            send_local_request(port, b"POST / HTTP/1.0\r\n", read_timeout)
-                .await?;
-
-        let buffer3 = send_local_request(
-            port,
+        _: Option<i32>,
+    ) -> CommunicateOutput {
+        let requests: &[&[u8]] = &[
+            b"GET HTTP/1.0\r\n",
+            b"POST / HTTP/1.0\r\n",
             b"GET /nonexistent HTTP/1.0\r\n",
-            read_timeout,
-        )
-        .await?;
-
-        let buffer4 = send_local_request(
-            port,
             b"GET /dir1/dir2 HTTP/1.0\r\n",
-            read_timeout,
-        )
-        .await?;
-
-        let buffer5 = send_local_request(
-            port,
             b"GET /dir1/dir2/dir4/no_permission HTTP/1.0\r\n",
-            read_timeout,
-        )
-        .await?;
-
-        let buffer6 = send_local_request(
-            port,
             b"GET /dir1/dir2/ HTTP/1.0\r\n",
-            read_timeout,
-        )
-        .await?;
-
-        let buffer7 = send_local_request(
-            port,
             b"GET /dir1/dir2/dir3/ HTTP/1.0\r\n",
-            read_timeout,
-        )
-        .await?;
-
-        let buffer8 = send_local_request(
-            port,
             b"GET /dir1/dir2/dir3/mov_example.mov HTTP/1.0\r\n",
-            read_timeout,
-        )
-        .await?;
+        ];
+        let mut responses = Vec::new();
+        for &req in requests {
+            let response = send_local_request(port, req, read_timeout).await;
+            if let Err(e) = response {
+                return CommunicateOutput {
+                    output: responses,
+                    error: Some(e),
+                };
+            }
+            responses.push(response.unwrap());
+        }
 
-        Ok(vec![
-            buffer1, buffer2, buffer3, buffer4, buffer5, buffer6, buffer7,
-            buffer8,
-        ])
+        CommunicateOutput { output: responses, error: None }
     }
 
-    fn validate(
+    async fn validate(
         &self,
         _: &Vec<String>,
-        communicate_output: Option<Vec<Vec<u8>>>,
+        responses: Option<CommunicateOutput>,
         _: ProcessOutput,
         tests_dir: &PathBuf,
     ) -> bool {
-        let communicate_output = communicate_output
+        let responses = responses
             .unwrap()
+            .output
             .into_iter()
             .map(|output| String::from_utf8_lossy(&output).to_lowercase())
             .collect::<Vec<String>>();
-
-        if !communicate_output[0].contains("bad request") {
+        
+        // sanity check
+        if responses.len() != 8 {
             return false;
         }
 
-        if !communicate_output[1].contains("not supported") {
+        if !responses[0].contains("bad request") {
             return false;
         }
 
-        if !communicate_output[2].contains("not found") {
+        if !responses[1].contains("not supported") {
             return false;
         }
 
-        if !communicate_output[3].contains("found") {
+        if !responses[2].contains("not found") {
             return false;
         }
 
-        if !communicate_output[4].contains("forbidden") {
+        if !responses[3].contains("found") {
             return false;
         }
 
-        if !communicate_output[5].contains("ok") {
+        if !responses[4].contains("forbidden") {
             return false;
         }
 
-        // if !communicate_output[6].contains("ok")  {
+        if !responses[5].contains("ok") {
+            return false;
+        }
+
+        // if !responses[6].contains("ok")  {
         //     return false;
         // }
 
-        if !communicate_output[7].contains("ok") {
+        if !responses[7].contains("ok") {
             return false;
         }
 
