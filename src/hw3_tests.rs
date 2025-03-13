@@ -200,6 +200,7 @@ fn verify_response_status(response: &Vec<u8>, expected: &str) -> bool {
     let content_length = "content-length: ";
     let response = String::from_utf8_lossy(response).to_lowercase();
     if !response.contains(&status) {
+        println!("[-] Test failed: Incorrect HTTP response status");
         return false;
     }
 
@@ -221,12 +222,14 @@ fn verify_response_status(response: &Vec<u8>, expected: &str) -> bool {
 
         let response_parts = response.split("\r\n\r\n").collect::<Vec<&str>>();
         if response_parts.len() < 2 {
+            println!("[-] Test failed: No body in response");
             return false;
         }
 
         let raw_body = response_parts[1];
 
         if raw_body.len() != content_length_value {
+            println!("[-] Test failed: Incorrect content-length");
             return false;
         }
 
@@ -446,7 +449,13 @@ impl TestAgent for TemporaryRedirect {
             .filter(|w| w == last_modified)
             .count();
 
-        if found_last_modified != 0 || found_location != 1 {
+        if found_last_modified != 0 {
+            println!("[-] Test failed: Last-Modified header found");
+            return false;
+        }
+
+        if found_location != 1 {
+            println!("[-] Test failed: Location header is missing or incorrect");
             return false;
         }
 
@@ -578,6 +587,7 @@ impl TestAgent for SearchForIndexHtml {
 
         for header in expected_headers {
             if !responses.contains(&header) {
+                println!("[-] Test failed: Header {} is missing", header);
                 return false;
             }
         }
@@ -586,6 +596,7 @@ impl TestAgent for SearchForIndexHtml {
             .expect("[-] Could not read index.html");
 
         if !responses.contains(index_html.to_lowercase().as_str()) {
+            println!("[-] Test failed: index.html content is missing or incomplete");
             return false;
         }
 
@@ -640,6 +651,7 @@ impl TestAgent for ReturnDirContent {
             std::fs::read_dir(dir_path).expect("[-] Could not read directory");
 
         if !responses.contains("http/1.0 200 ok") {
+            println!("[-] Test failed: Incorrect HTTP response status");
             return false;
         }
 
@@ -684,14 +696,17 @@ impl TestAgent for ReturnDirContent {
                 && !responses.contains(&col_name_v2)
                 && !responses.contains(&col_name_v3)
             {
+                println!("[-] Test failed: Missing or incorrect 'file name'");
                 return false;
             }
 
             if !responses.contains(&col_time) {
+                println!("[-] Test failed: Missing or incorrect 'Last-Modified' metadata. Expected: {}", col_time);
                 return false;
             }
 
             if !responses.contains(&col_size) {
+                println!("[-] Test failed: Missing or incorrect 'file size' metadata. Expected: {}", col_size);
                 return false;
             }
         }
@@ -745,10 +760,12 @@ impl TestAgent for FileSizeExceedsOSBuffer {
         let raw_headers = responses_utf8.split("\r\n\r\n").next().unwrap();
 
         if !raw_headers.contains("http/1.0 200 ok") {
+            println!("[-] Test failed: Incorrect HTTP response status");
             return false;
         }
 
         if raw_headers.contains("content-type") {
+            println!("[-] Test failed: Content-Type header found");
             return false;
         }
 
