@@ -186,7 +186,7 @@ async fn send_local_request(
     let mut buffer = Vec::new();
     let mut stream = TcpStream::connect(address).await?;
 
-    println!("[+] Sending request: {:?}", String::from_utf8_lossy(request).escape_debug());
+    println!("[+] Sending request: {:?}", String::from_utf8_lossy(request));
 
     stream.write_all(request).await?;
     timeout(
@@ -845,7 +845,7 @@ impl TestAgent for Deadlock {
             let mut stream = stream.unwrap();
 
             println!(
-                "[+] Sending request: GET /dir1/dir2/dir3/jpg_example.jpg HTTP/1.0"
+                "[+] Sending request: GET /dir1/dir2/dir3/jpg_example.jpg HTTP/1.0\r\n"
             );
 
             if let Err(e) = stream
