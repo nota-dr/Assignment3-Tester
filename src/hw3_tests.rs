@@ -844,12 +844,11 @@ impl TestAgent for Deadlock {
 
             let mut stream = stream.unwrap();
 
-            println!(
-                "[+] Sending request: GET /dir1/dir2/dir3/jpg_example.jpg HTTP/1.0\r\n"
-            );
+            let req = b"GET /dir1/dir2/dir3/jpg_example.jpg HTTP/1.0\r\n";
+            println!("[+] Sending request: {:?}", String::from_utf8_lossy(req));
 
             if let Err(e) = stream
-                .write_all(b"GET /dir1/dir2/dir3/jpg_example.jpg HTTP/1.0\r\n")
+                .write_all(req)
                 .await
             {
                 return CommunicateOutput {
