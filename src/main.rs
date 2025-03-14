@@ -20,7 +20,7 @@ fn main() {
     println!("│   │   ├── fifo_file");
     println!("│   │   ├── index.html");
     println!();
-    
+
     assignment3_tester::add_tests(&mut tm, 5000);
 
     let compilation =

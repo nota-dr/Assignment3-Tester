@@ -186,7 +186,10 @@ async fn send_local_request(
     let mut buffer = Vec::new();
     let mut stream = TcpStream::connect(address).await?;
 
-    println!("[+] Sending request: {:?}", String::from_utf8_lossy(request));
+    println!(
+        "[+] Sending request: {:?}",
+        String::from_utf8_lossy(request)
+    );
 
     stream.write_all(request).await?;
     timeout(
@@ -208,33 +211,34 @@ fn verify_response_status(response: &Vec<u8>, expected: &str) -> bool {
     }
 
     // verify that the content-length was not copied-pasta
-        let content_length_pos =
-            response.find(content_length).map(|i| i + content_length.len());
+    let content_length_pos = response
+        .find(content_length)
+        .map(|i| i + content_length.len());
 
-        let content_length_pos = match content_length_pos {
-            Some(i) => i,
-            None => return false,
-        };
+    let content_length_pos = match content_length_pos {
+        Some(i) => i,
+        None => return false,
+    };
 
-        let content_length_value = response[content_length_pos..]
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse::<usize>()
-            .expect("[-] Could not parse content-length");
+    let content_length_value = response[content_length_pos..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse::<usize>()
+        .expect("[-] Could not parse content-length");
 
-        let response_parts = response.split("\r\n\r\n").collect::<Vec<&str>>();
-        if response_parts.len() < 2 {
-            println!("[-] Test failed: No body in response");
-            return false;
-        }
+    let response_parts = response.split("\r\n\r\n").collect::<Vec<&str>>();
+    if response_parts.len() < 2 {
+        println!("[-] Test failed: No body in response");
+        return false;
+    }
 
-        let raw_body = response_parts[1];
+    let raw_body = response_parts[1];
 
-        if raw_body.len() != content_length_value {
-            println!("[-] Test failed: Incorrect content-length");
-            return false;
-        }
+    if raw_body.len() != content_length_value {
+        println!("[-] Test failed: Incorrect content-length");
+        return false;
+    }
 
     true
 }
@@ -249,12 +253,11 @@ impl TestAgent for Usage {
         _: &PathBuf,
     ) -> bool {
         let expected = "Usage: server";
+        let expected2 = "Usage: ./server";
         let output = [result.stdout, result.stderr].concat();
-        let output = String::from_utf8_lossy(&output);
-        if output
-            .trim()
-            .to_lowercase()
-            .contains(&expected.to_lowercase())
+        let output = String::from_utf8_lossy(&output).trim().to_lowercase();
+        if output.contains(&expected.to_lowercase())
+            || output.contains(&expected2.to_lowercase())
         {
             return true;
         }
@@ -458,7 +461,9 @@ impl TestAgent for TemporaryRedirect {
         }
 
         if found_location != 1 {
-            println!("[-] Test failed: Location header is missing or incorrect");
+            println!(
+                "[-] Test failed: Location header is missing or incorrect"
+            );
             return false;
         }
 
@@ -585,8 +590,8 @@ impl TestAgent for SearchForIndexHtml {
         expected_headers.push(&content_length);
         expected_headers.push(&last_modified);
 
-        let responses = String::from_utf8_lossy(&responses.output[0])
-            .to_lowercase();
+        let responses =
+            String::from_utf8_lossy(&responses.output[0]).to_lowercase();
 
         for header in expected_headers {
             if !responses.contains(&header) {
@@ -599,7 +604,9 @@ impl TestAgent for SearchForIndexHtml {
             .expect("[-] Could not read index.html");
 
         if !responses.contains(index_html.to_lowercase().as_str()) {
-            println!("[-] Test failed: index.html content is missing or incomplete");
+            println!(
+                "[-] Test failed: index.html content is missing or incomplete"
+            );
             return false;
         }
 
@@ -648,8 +655,8 @@ impl TestAgent for ReturnDirContent {
         }
 
         let dir_path = cwd.join("dir1/dir2/dir3");
-        let responses = String::from_utf8_lossy(&responses.output[0])
-            .to_lowercase();
+        let responses =
+            String::from_utf8_lossy(&responses.output[0]).to_lowercase();
         let entries =
             std::fs::read_dir(dir_path).expect("[-] Could not read directory");
 
@@ -847,10 +854,7 @@ impl TestAgent for Deadlock {
             let req = b"GET /dir1/dir2/dir3/jpg_example.jpg HTTP/1.0\r\n";
             println!("[+] Sending request: {:?}", String::from_utf8_lossy(req));
 
-            if let Err(e) = stream
-                .write_all(req)
-                .await
-            {
+            if let Err(e) = stream.write_all(req).await {
                 return CommunicateOutput {
                     output: responses,
                     error: Some(e),
@@ -961,7 +965,7 @@ impl TestAgent for Valgrind {
             .into_iter()
             .map(|output| String::from_utf8_lossy(&output).to_lowercase())
             .collect::<Vec<String>>();
-        
+
         // sanity check
         if responses.len() != 8 {
             return false;
